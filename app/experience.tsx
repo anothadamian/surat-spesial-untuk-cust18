@@ -1,0 +1,206 @@
+"use client";
+
+import Image from "next/image";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { formatTime, revealLetterMusic, startLetterMusic } from "./experience-utils";
+
+type Screen = "opening" | "envelope" | "time" | "letter" | "question" | "yes" | "promise";
+type Curtain = "cover" | "reveal" | null;
+
+const flowerPositions = Array.from({ length: 36 }, (_, index) => {
+  const column = index % 6;
+  const row = Math.floor(index / 6);
+  return {
+    left: `${column * 20}%`,
+    top: `${row * 20}%`,
+    delay: `${Math.hypot(column - 2.5, row - 2.5) * 28}ms`,
+    rotate: `${(index * 71) % 360}deg`,
+  };
+});
+
+const FLOWER_COVER_MS = 950;
+const FLOWER_HOLD_MS = 2000;
+const FLOWER_REVEAL_MS = 750;
+
+function BloomArt({ mood = "calm" }: { mood?: "calm" | "happy" | "quiet" }) {
+  const [touches, setTouches] = useState(0);
+  return <button className={`bloom-art ${mood}${touches ? " bloomed" : ""}`} type="button" aria-label="Touch the blue magnolia to make it bloom" onClick={() => setTouches(value => value + 1)}>
+    <span className="bloom-glow" aria-hidden="true" />
+    <span className="bloom-orbit orbit-one" aria-hidden="true" />
+    <span className="bloom-orbit orbit-two" aria-hidden="true" />
+    <span className="magnolia-core" aria-hidden="true" />
+    <span className="bloom-spark spark-one" aria-hidden="true">✦</span>
+    <span className="bloom-spark spark-two" aria-hidden="true">✧</span>
+    <span className="bloom-spark spark-three" aria-hidden="true">✦</span>
+    {touches > 0 && <span className="bloom-burst" key={touches} aria-hidden="true">{Array.from({ length: 8 }, (_, index) => <i key={index} style={{ "--angle": `${index * 45}deg`, "--delay": `${index * 35}ms` } as CSSProperties} />)}</span>}
+    <span className="bloom-hint">{touches ? "a little hope, slowly" : "tap to bloom"}</span>
+  </button>;
+}
+
+function FlowerCurtain({ phase }: { phase: Exclude<Curtain, null> }) {
+  return <div className={`flower-curtain ${phase}`} aria-hidden="true">
+    <div className="curtain-wash" />
+    {flowerPositions.map((flower, index) => <span className="curtain-flower" key={index} style={{ "--x": flower.left, "--y": flower.top, "--delay": flower.delay, "--rotate": flower.rotate } as CSSProperties} />)}
+    <span className="curtain-heart">♡</span>
+  </div>;
+}
+
+export default function Experience({ letter }: { letter: string }) {
+  const [screen, setScreen] = useState<Screen>("opening");
+  const [curtain, setCurtain] = useState<Curtain>(null);
+  const [leavingFor, setLeavingFor] = useState<Screen | null>(null);
+  const [letterProgress, setLetterProgress] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [audioNotice, setAudioNotice] = useState("");
+  const [showMiniPlayer, setShowMiniPlayer] = useState(false);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const musicPlayerRef = useRef<HTMLDivElement>(null);
+  const history = useRef<{ screen: Screen; scroll: number }[]>([]);
+  const busy = useRef(false);
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const pendingScroll = useRef(0);
+  const pendingLetterMusic = useRef(false);
+
+  useEffect(() => () => timers.current.forEach(clearTimeout), []);
+  useLayoutEffect(() => { window.scrollTo(0, pendingScroll.current); }, [screen]);
+  useEffect(() => {
+    if (screen !== "letter" || !pendingLetterMusic.current) return;
+    pendingLetterMusic.current = false;
+    const audio = audioRef.current;
+    if (audio) revealLetterMusic(audio);
+  }, [screen]);
+  useEffect(() => {
+    if (screen !== "letter") return;
+    const update = () => {
+      const total = document.documentElement.scrollHeight - window.innerHeight;
+      setLetterProgress(total > 0 ? Math.min(100, window.scrollY / total * 100) : 100);
+      setShowMiniPlayer((musicPlayerRef.current?.getBoundingClientRect().bottom ?? 0) < 0);
+    };
+    update();
+    window.addEventListener("scroll", update, { passive: true });
+    return () => window.removeEventListener("scroll", update);
+  }, [screen]);
+
+  function change(next: Screen, back = false) {
+    if (busy.current) return;
+    let restoreScroll = 0;
+    if (back) {
+      const previous = history.current.pop();
+      if (!previous) return;
+      next = previous.screen;
+      restoreScroll = previous.scroll;
+    } else {
+      history.current.push({ screen, scroll: window.scrollY });
+    }
+    if (!(["letter", "question", "yes", "promise"] as Screen[]).includes(next)) audioRef.current?.pause();
+    busy.current = true;
+    setLeavingFor(next);
+    pendingScroll.current = restoreScroll;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setScreen(next);
+      setLeavingFor(null);
+      busy.current = false;
+      return;
+    }
+    setCurtain("cover");
+    timers.current.push(setTimeout(() => {
+      setScreen(next);
+      setCurtain("reveal");
+      timers.current.push(setTimeout(() => {
+        setCurtain(null);
+        setLeavingFor(null);
+        busy.current = false;
+      }, FLOWER_REVEAL_MS));
+    }, FLOWER_COVER_MS + FLOWER_HOLD_MS));
+  }
+
+  function playMusic() {
+    const audio = audioRef.current;
+    if (!audio) return;
+    revealLetterMusic(audio);
+    void audio.play().then(() => setAudioNotice("")).catch(() => setAudioNotice("Press Play to listen to the song."));
+  }
+
+  function openLetter() {
+    if (busy.current) return;
+    const audio = audioRef.current;
+    if (audio) {
+      pendingLetterMusic.current = true;
+      void startLetterMusic(audio).then(() => setAudioNotice("")).catch(() => setAudioNotice("Press Play to listen to the song."));
+    }
+    change("letter");
+  }
+
+  function forgive() {
+    change("yes");
+  }
+
+  const button = (label: string, next: Screen, className = "") => <button className={`pill ${className}`} type="button" disabled={Boolean(curtain)} onClick={() => change(next)}>{label}</button>;
+  const back = () => <button className="pill back" type="button" disabled={Boolean(curtain)} onClick={() => change("opening", true)}>Back</button>;
+
+  return <main className="experience">
+    <audio ref={audioRef} src="/music/keep-me.mp3" preload="metadata" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} onTimeUpdate={event => { setCurrentTime(event.currentTarget.currentTime); if (Number.isFinite(event.currentTarget.duration)) setDuration(event.currentTarget.duration); }} onDurationChange={event => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)} onError={() => { setPlaying(false); setAudioNotice("The song could not load. Please press Play again."); }} />
+    <div className="ambient-petals" aria-hidden="true">{Array.from({ length: 7 }, (_, index) => <span key={index} />)}</div>
+    {screen === "opening" && <section className="scene center opening" key="opening">
+      <span className="tiny-star star-one" aria-hidden="true">✦</span><span className="tiny-star star-two" aria-hidden="true">✦</span>
+      <h1 className="script write">i’m sorry, love</h1>
+      <p>I hope you will see this, and accept my apologies</p>
+      {button("Start", "envelope")}
+    </section>}
+
+    {screen === "envelope" && <section className="scene center envelope-scene" key="envelope">
+      <button className={`envelope-art${leavingFor === "letter" ? " opening" : ""}`} type="button" aria-label="Open the letter" onClick={openLetter}><span className="envelope-back"/><span className="envelope-letter"/><span className="envelope-front"/><span className="envelope-flap"/><span className="envelope-seal">♡</span></button>
+      <div className="choice-stack"><button className="pill" type="button" disabled={Boolean(curtain)} onClick={openLetter}>Read</button>{button("I need more time", "time", "quiet-choice")}</div>
+      {back()}
+    </section>}
+
+    {screen === "time" && <section className="scene center space-scene" key="time">
+      <h1 className="script write">Take all the time you need, my love</h1>
+      <div className="space-row"><p>that’s hurt my feelings, but it’s okay. you can take much time you want</p><BloomArt mood="quiet" /></div>
+      {back()}
+    </section>}
+
+    {screen === "letter" && <section className="scene letter-scene" key="letter">
+      <div className="read-progress" aria-hidden="true"><span style={{ width: `${letterProgress}%` }} /></div>
+      <article className="letter-inner">
+        <h1 className="script write">I&apos;m Sorry</h1>
+        <figure className="memory"><Image src="/photos/kennar-memory.jpeg" alt="Shean and Kennar together" width={900} height={1600} priority /><figcaption>my only love</figcaption></figure>
+        <div className="music-player" ref={musicPlayerRef} role="group" aria-label="Music player">
+          <span className={`music-disc${playing ? " spinning" : ""}`} aria-hidden="true">♪</span>
+          <div className="music-details"><div className="music-title"><strong>Keep Me</strong><span>Novo Amor</span></div><input type="range" aria-label="Seek in Keep Me" min="0" max={duration || 0} step="1" value={Math.min(currentTime, duration || 0)} disabled={!duration} onChange={event => { if (audioRef.current) audioRef.current.currentTime = Number(event.target.value); }} style={{ "--music-progress": `${duration ? currentTime / duration * 100 : 0}%` } as CSSProperties} /><div className="music-time"><span>{formatTime(currentTime)}</span><span>{formatTime(duration)}</span></div></div>
+          <button className="music-toggle" type="button" aria-label={playing ? "Pause music" : "Play music"} onClick={() => playing ? audioRef.current?.pause() : playMusic()}>{playing ? "❚❚" : "▶"}</button>
+          {audioNotice && <p className="music-notice" role="status">{audioNotice}</p>}
+        </div>
+        <p className="letter-intro">For you, my love.</p>
+        <p className="letter-copy">{letter}</p>
+        <div className="letter-actions">{back()}{button("Continue", "question")}</div>
+      </article>
+    </section>}
+
+    {screen === "question" && <section className="scene center question-scene" key="question">
+      <h1 className="script write">sayang, will you forgive me?</h1>
+      <div className="question-flower"><BloomArt /></div>
+      <div className="question-actions"><button className="pill" type="button" disabled={Boolean(curtain)} onClick={forgive}>Yes</button>{button("I need more time", "time", "quiet-choice")}</div>
+      <div className="question-back">{back()}</div>
+    </section>}
+
+    {screen === "yes" && <section className="scene center yes-scene" key="yes">
+      <h1 className="script write">Thank You, My Love</h1>
+      <BloomArt mood="happy" />
+      <p>thank you, sayangku. your forgiveness mean a lot to me</p>
+      {button("Continue", "promise", "continue-choice")}
+      {back()}
+    </section>}
+
+    {screen === "promise" && <section className="scene center promise-scene" key="promise">
+      <h1 className="script write">I Promise</h1>
+      <BloomArt mood="happy" />
+      <p>i promise this won’t happen again, i love you</p>
+      {back()}
+    </section>}
+    {(screen === "letter" && showMiniPlayer || screen === "question" || screen === "yes" || screen === "promise") && <button className="music-float" type="button" aria-label={playing ? "Pause Keep Me" : "Play Keep Me"} title={playing ? "Pause Keep Me" : "Play Keep Me"} onClick={() => playing ? audioRef.current?.pause() : playMusic()}><span aria-hidden="true">♫</span><span aria-hidden="true">{playing ? "❚❚" : "▶"}</span></button>}
+    {curtain && <FlowerCurtain phase={curtain} />}
+  </main>;
+}
